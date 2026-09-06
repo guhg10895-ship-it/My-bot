@@ -6,7 +6,7 @@ on:
     - cron: '0 */4 * * *'
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # 👈 Node 24 ကို force သုံးမယ်
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 concurrency:
   group: unlock-bot
@@ -27,11 +27,23 @@ jobs:
       - name: 🛠️ Install System Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y fcrackzip unrar p7zip-full john hashcat zip2john
+          sudo apt-get install -y fcrackzip unrar p7zip-full john
+          # zip2john က john package ထဲမှာပါတယ် — ဒါပေမယ့် သီးခြား install မလုပ်ရဘူး
+          echo "✅ fcrackzip installed: $(which fcrackzip)"
+          echo "✅ 7z installed: $(which 7z)"
+          echo "✅ john installed: $(which john)"
+          # zip2john ရှိမရှိ စစ်ပါ
+          if [ -f /usr/share/john/zip2john ]; then
+            echo "✅ zip2john found in /usr/share/john/"
+            sudo ln -sf /usr/share/john/zip2john /usr/local/bin/zip2john
+          else
+            echo "⚠️ zip2john not found — will use john directly"
+          fi
 
       - name: 📦 Install Python Dependencies
         run: |
-          pip install -r requirements.txt
+          pip install --upgrade pip
+          pip install pyTelegramBotAPI requests
 
       - name: 📂 Setup Wordlist
         run: |
@@ -40,6 +52,7 @@ jobs:
           else
             curl -L -o rockyou.txt https://raw.githubusercontent.com/brannondorsey/naive-hashcat/master/rockyou.txt
           fi
+          echo "✅ Wordlist size: $(wc -l < rockyou.txt) lines"
 
       - name: 🤖 Run Bot
         run: python bot.py
