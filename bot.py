@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# 🔓 GHOST Unlock Bot — Support AES-256 & ZipCrypto
-# Created by GHOST | For educational & own file use only!
+# 🔓 GHOST Unlock Bot — Force 7z Detection for AES-256
 
 import os
 import sys
@@ -10,7 +9,6 @@ import shutil
 import tempfile
 import re
 import zipfile
-from pathlib import Path
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -19,8 +17,8 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # ============================================
 BOT_TOKEN = "8940684766:AAFij8rh9ihggCOakDhofjTikQj8x8AeS3Q"
 WORDLIST_PATH = "rockyou.txt"
-MAX_FILE_SIZE = 45 * 1024 * 1024  # 45 MB
-TIMEOUT_CRACK = 180  # 3 minutes
+MAX_FILE_SIZE = 45 * 1024 * 1024
+TIMEOUT_CRACK = 180
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -29,7 +27,6 @@ bot = telebot.TeleBot(BOT_TOKEN)
 # ============================================
 
 def download_wordlist():
-    """Download rockyou.txt if not exists"""
     if os.path.exists(WORDLIST_PATH):
         return True
     print("📥 Downloading wordlist...")
@@ -40,25 +37,17 @@ def download_wordlist():
         if r.status_code == 200:
             with open(WORDLIST_PATH, 'wb') as f:
                 f.write(r.content)
-            print("✅ Wordlist downloaded!")
             return True
     except:
         pass
-    # Fallback: create minimal wordlist
-    print("⚠️ Creating minimal wordlist...")
+    # Fallback minimal
     with open(WORDLIST_PATH, 'w') as f:
-        words = [
-            "password", "123456", "123456789", "qwerty", "abc123",
-            "admin", "letmein", "welcome", "monkey", "dragon",
-            "master", "sunshine", "iloveyou", "princess", "rockyou",
-            "12345", "12345678", "abc123", "password1", "admin123"
-        ]
+        words = ["password", "123456", "qwerty", "admin", "letmein", "welcome", "monkey", "dragon"]
         for w in words:
             f.write(w + "\n")
     return True
 
 def get_file_type(file_path):
-    """Detect file type by extension"""
     ext = os.path.splitext(file_path)[1].lower()
     if ext == '.zip':
         return 'zip'
@@ -69,229 +58,178 @@ def get_file_type(file_path):
     return None
 
 def is_password_protected(file_path):
-    """Check if file is password protected (supports AES-256)"""
+    """
+    Check if file is password protected using MULTIPLE methods.
+    Primarily uses 7z command because it handles AES-256 perfectly.
+    """
     file_type = get_file_type(file_path)
-    
+    if not file_type:
+        return False
+
+    # ===== METHOD 1: 7z Command (MOST RELIABLE for AES) =====
+    try:
+        # Use 7z to test the archive
+        result = subprocess.run(
+            ["7z", "t", file_path],
+            capture_output=True, text=True, timeout=15
+        )
+        output = result.stdout + result.stderr
+        print(f"[DEBUG] 7z output: {output[:300]}")
+        
+        # 7z returns different messages for password protected files
+        if "Can not open encrypted archive" in output:
+            print("[DEBUG] 7z: Password protected (AES/ZipCrypto)")
+            return True
+        if "Enter password" in output:
+            print("[DEBUG] 7z: Password protected")
+            return True
+        if "Password" in output and "ERROR" in output:
+            print("[DEBUG] 7z: Password protected (error)")
+            return True
+        if "Cannot find archive" in output:
+            # 7z couldn't read it, might be password protected
+            pass
+        else:
+            # If 7z can list contents without error, it's NOT password protected
+            # But sometimes 7z asks for password in stderr
+            if "Everything is Ok" in output and "Password" not in output:
+                print("[DEBUG] 7z: Not password protected")
+                return False
+    except Exception as e:
+        print(f"[DEBUG] 7z test error: {e}")
+
+    # ===== METHOD 2: pyzipper (AES support) =====
     if file_type == 'zip':
-        # Try pyzipper first (supports AES)
         try:
             import pyzipper
             with pyzipper.AESZipFile(file_path, 'r') as zf:
-                # Try to read file list without password
+                # Try to read file list - this raises if password needed
                 zf.namelist()
+                print("[DEBUG] pyzipper: Not password protected")
                 return False
         except pyzipper.BadPassword:
+            print("[DEBUG] pyzipper: BadPassword exception")
             return True
         except pyzipper.WrongPassword:
+            print("[DEBUG] pyzipper: WrongPassword exception")
             return True
-        except:
-            pass
-        
-        # Fallback to 7z command
-        try:
-            result = subprocess.run(
-                ["7z", "t", file_path],
-                capture_output=True, text=True, timeout=10
-            )
-            if "Password" in result.stdout or "Enter password" in result.stdout:
+        except RuntimeError as e:
+            if "password required" in str(e).lower():
+                print("[DEBUG] pyzipper: Password required")
                 return True
-            if "Cannot find archive" in result.stderr:
-                return False
-        except:
-            pass
-        
-        # Try standard zipfile (only works for ZipCrypto)
+        except Exception as e:
+            print(f"[DEBUG] pyzipper error: {e}")
+
+    # ===== METHOD 3: Standard zipfile (ZipCrypto only) =====
+    if file_type == 'zip':
         try:
             with zipfile.ZipFile(file_path, 'r') as zf:
                 zf.namelist()
+                print("[DEBUG] zipfile: Not password protected")
                 return False
-        except RuntimeError:
+        except RuntimeError as e:
+            if "encrypted" in str(e).lower():
+                print("[DEBUG] zipfile: Password protected")
+                return True
+        except Exception as e:
+            print(f"[DEBUG] zipfile error: {e}")
+
+    # ===== METHOD 4: Check file size / header (last resort) =====
+    # Some AES files don't trigger any exception, so we check if extraction fails
+    try:
+        # Try to extract a single file with 7z in dry-run mode
+        result = subprocess.run(
+            ["7z", "l", file_path],
+            capture_output=True, text=True, timeout=10
+        )
+        if "Enter password" in result.stderr or "Can not open encrypted archive" in result.stderr:
+            print("[DEBUG] 7z list: Password protected")
             return True
-        except:
-            return True
-    
-    elif file_type == 'rar':
-        try:
-            import rarfile
-            with rarfile.RarFile(file_path) as rf:
-                rf.namelist()
-                return False
-        except rarfile.RarFileError:
-            return True
-        except:
-            return True
-    
-    elif file_type == '7z':
-        try:
-            import py7zr
-            with py7zr.SevenZipFile(file_path, 'r') as sz:
-                sz.getnames()
-                return False
-        except py7zr.exceptions.Bad7zFile:
-            return True
-        except:
-            return True
-    
-    return False
+        if "0 files" in result.stdout and result.returncode != 0:
+            # Could be encrypted
+            pass
+    except:
+        pass
+
+    # If all methods fail, assume it's protected (better safe than sorry)
+    print("[DEBUG] Fallback: Assuming password protected")
+    return True
 
 def crack_password_zip(file_path, wordlist):
-    """Crack ZIP password with fcrackzip (supports AES)"""
+    """Crack ZIP using fcrackzip"""
     try:
         cmd = f"fcrackzip -u -D -p {wordlist} {file_path}"
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=TIMEOUT_CRACK)
         output = result.stdout + result.stderr
         
-        print(f"[DEBUG] fcrackzip output: {output[:500]}")
-        
-        # Try to extract password
         match = re.search(r'PASSWORD FOUND:\s*(\S+)', output)
         if match:
             return match.group(1)
-        
-        # Alternative format
         for line in output.split('\n'):
             if 'PASSWORD FOUND' in line:
                 parts = line.split(':')
                 if len(parts) >= 2:
                     return parts[-1].strip()
-        
-        # Check if fcrackzip didn't support this format
-        if "not encrypted" in output.lower():
-            return None  # Not actually protected
-        
         return None
     except subprocess.TimeoutExpired:
         return "TIMEOUT"
-    except Exception as e:
-        print(f"[DEBUG] Crack error: {e}")
+    except:
         return None
 
 def crack_password_rar(file_path, wordlist):
-    """Crack RAR password"""
     try:
-        # Try rar2john
-        cmd_hash = f"rar2john '{file_path}' > hash.txt 2>/dev/null"
-        subprocess.run(cmd_hash, shell=True, timeout=10)
+        subprocess.run(f"rar2john '{file_path}' > hash.txt 2>/dev/null", shell=True, timeout=10)
         if not os.path.exists("hash.txt") or os.path.getsize("hash.txt") < 10:
             return None
-        
-        # Crack with john
         subprocess.run(f"john --wordlist={wordlist} --format=rar hash.txt", shell=True, timeout=TIMEOUT_CRACK)
-        
-        # Get password
         result = subprocess.run("john --show hash.txt | grep -o ':[^:]*$' | sed 's/://'", 
                                 shell=True, capture_output=True, text=True, timeout=5)
         password = result.stdout.strip()
-        
         os.remove("hash.txt") if os.path.exists("hash.txt") else None
         return password if password else None
     except:
         return None
 
 def crack_password_7z(file_path, wordlist):
-    """Crack 7z password"""
     try:
-        cmd_hash = f"7z2john '{file_path}' > hash.txt 2>/dev/null"
-        subprocess.run(cmd_hash, shell=True, timeout=10)
+        subprocess.run(f"7z2john '{file_path}' > hash.txt 2>/dev/null", shell=True, timeout=10)
         if not os.path.exists("hash.txt") or os.path.getsize("hash.txt") < 10:
             return None
-        
         subprocess.run(f"john --wordlist={wordlist} --format=7z hash.txt", shell=True, timeout=TIMEOUT_CRACK)
-        
         result = subprocess.run("john --show hash.txt | grep -o ':[^:]*$' | sed 's/://'", 
                                 shell=True, capture_output=True, text=True, timeout=5)
         password = result.stdout.strip()
-        
         os.remove("hash.txt") if os.path.exists("hash.txt") else None
         return password if password else None
     except:
         return None
 
 def extract_file(file_path, password, file_type):
-    """Extract file with password support (AES-256 compatible)"""
+    """Extract using 7z for best compatibility"""
     extract_dir = tempfile.mkdtemp()
-    
     try:
         if file_type == 'zip':
-            # Try pyzipper first (AES support)
-            try:
-                import pyzipper
-                with pyzipper.AESZipFile(file_path, 'r') as zf:
-                    zf.pwd = password.encode()
-                    zf.extractall(extract_dir)
-                print(f"[DEBUG] Extracted with pyzipper")
+            # Use 7z (handles AES-256)
+            cmd = ["7z", "x", f"-p{password}", file_path, f"-o{extract_dir}", "-y"]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            print(f"[DEBUG] 7z extract stdout: {result.stdout[:200]}")
+            print(f"[DEBUG] 7z extract stderr: {result.stderr[:200]}")
+            if "Everything is Ok" in result.stdout or result.returncode == 0:
                 return extract_dir
-            except:
-                pass
-            
-            # Try 7z command (works for most formats)
-            try:
-                subprocess.run(
-                    ["7z", "x", f"-p{password}", file_path, f"-o{extract_dir}", "-y"],
-                    capture_output=True, timeout=60, check=True
-                )
-                print(f"[DEBUG] Extracted with 7z")
-                return extract_dir
-            except:
-                pass
-            
-            # Try standard zipfile (ZipCrypto only)
-            try:
-                with zipfile.ZipFile(file_path, 'r') as zf:
-                    zf.extractall(extract_dir, pwd=password.encode())
-                print(f"[DEBUG] Extracted with zipfile")
-                return extract_dir
-            except:
-                pass
-            
-            shutil.rmtree(extract_dir, ignore_errors=True)
-            return None
-        
         elif file_type == 'rar':
-            try:
-                import rarfile
-                with rarfile.RarFile(file_path, 'r') as rf:
-                    rf.extractall(extract_dir, pwd=password)
-                return extract_dir
-            except:
-                try:
-                    subprocess.run(
-                        ["unrar", "x", f"-p{password}", file_path, extract_dir],
-                        capture_output=True, timeout=60, check=True
-                    )
-                    return extract_dir
-                except:
-                    pass
-            shutil.rmtree(extract_dir, ignore_errors=True)
-            return None
-        
+            cmd = ["unrar", "x", f"-p{password}", file_path, extract_dir]
+            subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+            return extract_dir
         elif file_type == '7z':
-            try:
-                import py7zr
-                with py7zr.SevenZipFile(file_path, 'r', password=password) as sz:
-                    sz.extractall(extract_dir)
-                return extract_dir
-            except:
-                try:
-                    subprocess.run(
-                        ["7z", "x", f"-p{password}", file_path, f"-o{extract_dir}", "-y"],
-                        capture_output=True, timeout=60, check=True
-                    )
-                    return extract_dir
-                except:
-                    pass
-            shutil.rmtree(extract_dir, ignore_errors=True)
-            return None
-        
+            cmd = ["7z", "x", f"-p{password}", file_path, f"-o{extract_dir}", "-y"]
+            subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+            return extract_dir
+        shutil.rmtree(extract_dir, ignore_errors=True)
         return None
     except Exception as e:
         print(f"[DEBUG] Extract error: {e}")
         shutil.rmtree(extract_dir, ignore_errors=True)
         return None
-
-def clean_filename(name):
-    """Clean filename for safety"""
-    return "".join(c for c in name if c.isalnum() or c in "._- ")
 
 # ============================================
 # 📋 Telegram Commands
@@ -301,16 +239,12 @@ def clean_filename(name):
 def start_cmd(msg):
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("📖 Help", callback_data="help"))
-    
     bot.reply_to(
         msg,
-        "🔓 **GHOST Unlock Bot**\n\n"
+        "🔓 **GHOST Unlock Bot v2.0**\n\n"
         "Send me a password-protected **ZIP / RAR / 7z** file.\n"
-        "I will try to crack the password using dictionary attack.\n\n"
-        "✅ Supports **AES-256** and **ZipCrypto** encryption.\n"
-        "⚠️ For **educational purposes** and your **own files** only!\n"
-        "📦 Max file size: 45 MB\n"
-        "⏱️ Processing time: ~3 minutes\n\n"
+        "✅ Supports **AES-256** encryption.\n"
+        "⚠️ For **educational purposes** only!\n"
         "Use /help for more info.",
         reply_markup=markup,
         parse_mode='Markdown'
@@ -321,18 +255,15 @@ def help_cmd(msg):
     bot.reply_to(
         msg,
         "📖 **How to use:**\n\n"
-        "1️⃣ Send a **ZIP, RAR, or 7z** file that is password-protected.\n"
-        "2️⃣ Wait while I try to crack the password using `rockyou.txt` wordlist.\n"
-        "3️⃣ If found, I will extract and send you the unlocked files.\n\n"
+        "1️⃣ Send a password-protected ZIP/RAR/7z file.\n"
+        "2️⃣ Wait for cracking (up to 3 minutes).\n"
+        "3️⃣ If password found, I'll send you the unlocked files.\n\n"
         "⚡ **Supported Encryption:**\n"
         "- ZIP: ZipCrypto, AES-256\n"
         "- RAR: RAR 3.x, RAR 5.x\n"
         "- 7z: AES-256\n\n"
-        "⚠️ **Limitations:**\n"
-        "- Only works with **weak/common passwords**.\n"
-        "- Max file size: **45 MB**.\n"
-        "- Processing time: **~3 minutes**.\n\n"
-        "💡 For strong passwords, try a custom wordlist or brute-force.",
+        "📦 Max file size: 45 MB\n"
+        "⏱️ Timeout: 3 minutes",
         parse_mode='Markdown'
     )
 
@@ -342,12 +273,10 @@ def handle_file(msg):
     file_name = msg.document.file_name
     file_size = msg.document.file_size
 
-    # Check file size
     if file_size > MAX_FILE_SIZE:
         bot.reply_to(msg, f"❌ File too large! Max size: {MAX_FILE_SIZE//1024//1024} MB")
         return
 
-    # Check extension
     if not any(file_name.lower().endswith(ext) for ext in ['.zip', '.rar', '.7z']):
         bot.reply_to(msg, "❌ Please send **ZIP, RAR, or 7z** file only.")
         return
@@ -358,33 +287,30 @@ def handle_file(msg):
     file_info = bot.get_file(msg.document.file_id)
     downloaded = bot.download_file(file_info.file_path)
 
-    # Save to temp
     temp_dir = tempfile.mkdtemp()
     file_path = os.path.join(temp_dir, file_name)
     with open(file_path, 'wb') as f:
         f.write(downloaded)
 
-    # Check if really password protected
-    bot.reply_to(msg, "🔍 Checking file type and protection...")
     file_type = get_file_type(file_path)
-    
     if not file_type:
         bot.reply_to(msg, "❌ Unsupported file type!")
         shutil.rmtree(temp_dir, ignore_errors=True)
         return
 
-    # Check password protection (supports AES)
+    # 🔥 Check if password protected (AES-256 ready)
+    bot.reply_to(msg, "🔍 Checking file protection (AES-256 supported)...")
     protected = is_password_protected(file_path)
-    print(f"[DEBUG] Protected: {protected} for {file_type}")
-    
+    print(f"[DEBUG] Protected: {protected}")
+
     if not protected:
         bot.reply_to(msg, "ℹ️ This file is **NOT** password protected!\nSend the unlocked file directly.", parse_mode='Markdown')
         shutil.rmtree(temp_dir, ignore_errors=True)
         return
 
-    bot.reply_to(msg, f"🔐 File is password protected! Starting cracking with dictionary attack...\n⏱️ This may take up to 3 minutes.")
+    bot.reply_to(msg, f"🔐 File is password protected! Cracking with dictionary attack...\n⏱️ Up to 3 minutes.")
 
-    # Crack password
+    # Crack
     password = None
     if file_type == 'zip':
         password = crack_password_zip(file_path, WORDLIST_PATH)
@@ -396,28 +322,27 @@ def handle_file(msg):
     if not password:
         bot.reply_to(
             msg,
-            "❌ Password **NOT FOUND** in `rockyou.txt` wordlist.\n\n"
+            "❌ Password **NOT FOUND** in wordlist.\n\n"
             "💡 **Suggestions:**\n"
-            "- Use a stronger wordlist (e.g., `rockyou.txt` full version)\n"
-            "- Try brute-force (but it's slow)\n"
-            "- Check if the password is in the list below:\n"
-            "  `password, 123456, qwerty, admin, letmein`",
+            "- Use a stronger password wordlist.\n"
+            "- Try brute-force (slow).\n"
+            "- Check if password is common (e.g., `password`, `123456`).",
             parse_mode='Markdown'
         )
         shutil.rmtree(temp_dir, ignore_errors=True)
         return
 
     if password == "TIMEOUT":
-        bot.reply_to(msg, "⏰ Cracking timed out after 3 minutes!\nPassword might be too strong.")
+        bot.reply_to(msg, "⏰ Cracking timed out! Password might be too strong.")
         shutil.rmtree(temp_dir, ignore_errors=True)
         return
 
     bot.reply_to(msg, f"✅ Password found: `{password}`\n🔓 Extracting files...", parse_mode='Markdown')
 
-    # Extract files (supports AES)
+    # Extract
     extract_dir = extract_file(file_path, password, file_type)
     if not extract_dir:
-        bot.reply_to(msg, "❌ Failed to extract files! The password might be incorrect or the file is corrupted.")
+        bot.reply_to(msg, "❌ Failed to extract files! Password may be incorrect or file is corrupted.")
         shutil.rmtree(temp_dir, ignore_errors=True)
         return
 
@@ -432,18 +357,17 @@ def handle_file(msg):
             f,
             caption=f"✅ **Unlocked!**\n\n"
                     f"🔑 Password: `{password}`\n"
-                    f"📁 Original file: `{file_name}`\n"
-                    f"📦 Files extracted and zipped for you.\n\n"
-                    f"🔐 Encryption supported: AES-256 / ZipCrypto",
+                    f"📁 Original: `{file_name}`\n"
+                    f"📦 Files extracted successfully.\n\n"
+                    f"🔐 AES-256 supported.",
             parse_mode='Markdown'
         )
 
-    # Cleanup
     shutil.rmtree(temp_dir, ignore_errors=True)
     bot.send_message(chat_id, "🧹 Cleanup done! Send another file to crack more.")
 
 # ============================================
-# 🎛️ Callback Handlers
+# 🎛️ Callback Handler
 # ============================================
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -452,18 +376,15 @@ def handle_callback(call):
         bot.answer_callback_query(call.id, "📖 Help sent!")
         bot.edit_message_text(
             "📖 **How to use:**\n\n"
-            "1️⃣ Send a **ZIP, RAR, or 7z** file that is password-protected.\n"
-            "2️⃣ Wait while I try to crack the password using `rockyou.txt` wordlist.\n"
-            "3️⃣ If found, I will extract and send you the unlocked files.\n\n"
+            "1️⃣ Send a password-protected ZIP/RAR/7z file.\n"
+            "2️⃣ Wait for cracking (up to 3 minutes).\n"
+            "3️⃣ If password found, I'll send you the unlocked files.\n\n"
             "⚡ **Supported Encryption:**\n"
             "- ZIP: ZipCrypto, AES-256\n"
             "- RAR: RAR 3.x, RAR 5.x\n"
             "- 7z: AES-256\n\n"
-            "⚠️ **Limitations:**\n"
-            "- Only works with **weak/common passwords**.\n"
-            "- Max file size: **45 MB**.\n"
-            "- Processing time: **~3 minutes**.\n\n"
-            "💡 For strong passwords, try a custom wordlist or brute-force.",
+            "📦 Max file size: 45 MB\n"
+            "⏱️ Timeout: 3 minutes",
             call.message.chat.id,
             call.message.message_id,
             parse_mode='Markdown'
@@ -473,22 +394,15 @@ def handle_callback(call):
 # 🚀 Start
 # ============================================
 if __name__ == "__main__":
-    print("🔥 GHOST Unlock Bot Starting...")
-    print(f"🤖 Token: {BOT_TOKEN[:10]}...")
-    
-    # Download wordlist
-    if not download_wordlist():
-        print("⚠️ Wordlist download failed, using minimal wordlist.")
-    
+    print("🔥 GHOST Unlock Bot v2.0 Starting...")
+    download_wordlist()
     print("✅ Bot is ready!")
-    print("📩 Waiting for files...")
-    
     while True:
         try:
             bot.infinity_polling(timeout=60)
         except KeyboardInterrupt:
-            print("\n⏹️ Bot stopped by user.")
+            print("\n⏹️ Stopped.")
             break
         except Exception as e:
-            print(f"❌ Polling error: {e}")
+            print(f"❌ Error: {e}")
             time.sleep(10)
