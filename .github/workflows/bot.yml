@@ -24,8 +24,8 @@ jobs:
       - name: 🛠️ Install Tools & Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y fcrackzip unrar p7zip-full
-          pip install pyTelegramBotAPI requests rarfile py7zr
+          sudo apt-get install -y fcrackzip unrar p7zip-full rar2john john
+          pip install -r requirements.txt
 
       - name: 📂 Setup Wordlist
         run: |
