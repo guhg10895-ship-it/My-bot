@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 🔓 GHOST Unlock Bot — No zip2john dependency
+# 🔓 GHOST Unlock Bot v5.0 — hashcat + john + 7z
 
 import os
 import sys
@@ -18,7 +18,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8940684766:AAFij8rh9ihggCOakDhofjTikQj8x8AeS3Q")
 WORDLIST_PATH = "rockyou.txt"
 MAX_FILE_SIZE = 45 * 1024 * 1024
-TIMEOUT_CRACK = 300
+TIMEOUT_CRACK = 300  # 5 minutes
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -27,6 +27,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 # ============================================
 
 def download_wordlist():
+    """Download rockyou.txt"""
     if os.path.exists(WORDLIST_PATH):
         return True
     try:
@@ -39,10 +40,7 @@ def download_wordlist():
             return True
     except:
         pass
-    with open(WORDLIST_PATH, 'w') as f:
-        for w in ["password", "123456", "qwerty", "admin", "letmein", "welcome"]:
-            f.write(w + "\n")
-    return True
+    return False
 
 def is_password_protected(file_path):
     """Check if file is password protected using 7z"""
@@ -66,15 +64,56 @@ def is_password_protected(file_path):
 
 def crack_password_zip(file_path, wordlist):
     """
-    Crack ZIP using john directly (without zip2john)
-    Uses john's --format=zip
+    Multi-method ZIP cracker:
+    1. hashcat (best for AES-256)
+    2. john (fallback)
+    3. 7z brute force (last resort)
     """
-    print("[DEBUG] Starting crack...")
     
-    # Method 1: Try john directly
+    # ===== METHOD 1: hashcat =====
+    print("[DEBUG] Method 1: hashcat")
     try:
-        print("[DEBUG] Method 1: john with --format=zip")
-        # Run john directly on the zip file
+        # Extract hash using zip2john (if available)
+        hash_file = "hash.txt"
+        subprocess.run(
+            f"zip2john '{file_path}' > {hash_file} 2>/dev/null",
+            shell=True, timeout=10
+        )
+        
+        if os.path.exists(hash_file) and os.path.getsize(hash_file) > 50:
+            # hashcat mode 13600 = WinZip AES-256
+            # mode 17200 = PKZIP (legacy)
+            cmd = f"hashcat -m 13600 -a 0 {hash_file} {wordlist} --force --potfile-disable 2>/dev/null"
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                timeout=TIMEOUT_CRACK
+            )
+            print(f"[DEBUG] hashcat returncode: {result.returncode}")
+            
+            # Get password
+            show = subprocess.run(
+                f"hashcat -m 13600 {hash_file} --show --force 2>/dev/null | grep -o ':[^:]*$' | sed 's/://'",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            password = show.stdout.strip()
+            os.remove(hash_file) if os.path.exists(hash_file) else None
+            if password:
+                print(f"[DEBUG] hashcat found: {password}")
+                return password
+        os.remove(hash_file) if os.path.exists(hash_file) else None
+    except subprocess.TimeoutExpired:
+        print("[DEBUG] hashcat: TIMEOUT")
+    except Exception as e:
+        print(f"[DEBUG] hashcat error: {e}")
+
+    # ===== METHOD 2: john =====
+    print("[DEBUG] Method 2: john")
+    try:
+        # john with --format=zip
         cmd = f"john --wordlist={wordlist} --format=zip {file_path}"
         result = subprocess.run(
             cmd,
@@ -84,32 +123,26 @@ def crack_password_zip(file_path, wordlist):
             timeout=TIMEOUT_CRACK
         )
         print(f"[DEBUG] john returncode: {result.returncode}")
-        print(f"[DEBUG] john stdout: {result.stdout[:200]}")
-        print(f"[DEBUG] john stderr: {result.stderr[:200]}")
         
-        # Check if password found
-        if "No password hashes loaded" in result.stdout:
-            print("[DEBUG] No password hashes loaded")
-        else:
-            # Try to show the password
-            show = subprocess.run(
-                f"john --show {file_path} | grep -o ':[^:]*$' | sed 's/://'",
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            password = show.stdout.strip()
-            print(f"[DEBUG] john show result: {password}")
-            if password:
-                return password
+        # Get password
+        show = subprocess.run(
+            f"john --show {file_path} | grep -o ':[^:]*$' | sed 's/://'",
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        password = show.stdout.strip()
+        if password:
+            print(f"[DEBUG] john found: {password}")
+            return password
     except subprocess.TimeoutExpired:
         print("[DEBUG] john: TIMEOUT")
     except Exception as e:
         print(f"[DEBUG] john error: {e}")
 
-    # Method 2: 7z brute force
-    print("[DEBUG] Method 2: 7z brute force")
+    # ===== METHOD 3: 7z brute force (slow) =====
+    print("[DEBUG] Method 3: 7z brute force")
     try:
         with open(wordlist, 'r', encoding='utf-8', errors='ignore') as f:
             count = 0
@@ -118,7 +151,7 @@ def crack_password_zip(file_path, wordlist):
                 if not pwd:
                     continue
                 count += 1
-                if count % 100 == 0:
+                if count % 50 == 0:
                     print(f"[DEBUG] 7z tried: {count}")
                 result = subprocess.run(
                     ["7z", "t", f"-p{pwd}", file_path],
@@ -126,12 +159,12 @@ def crack_password_zip(file_path, wordlist):
                     timeout=3
                 )
                 if result.returncode == 0:
-                    print(f"[DEBUG] Password found by 7z: {pwd}")
+                    print(f"[DEBUG] 7z found: {pwd}")
                     return pwd
     except Exception as e:
         print(f"[DEBUG] 7z brute error: {e}")
 
-    return None
+    return None  # No password found
 
 def extract_file(file_path, password):
     """Extract ZIP using 7z"""
@@ -157,9 +190,10 @@ def start_cmd(msg):
     markup.add(InlineKeyboardButton("📖 Help", callback_data="help"))
     bot.reply_to(
         msg,
-        "🔓 **GHOST Unlock Bot**\n\n"
+        "🔓 **GHOST Unlock Bot v5.0**\n\n"
         "Send me a password-protected **ZIP** file.\n"
         "✅ Supports **WinZip AES-256**\n"
+        "⚡ Multi-method: hashcat → john → 7z\n"
         "⚠️ For **educational purposes** only!\n\n"
         "⏱️ Cracking may take 5+ minutes.",
         reply_markup=markup,
@@ -198,7 +232,7 @@ def handle_file(msg):
         shutil.rmtree(temp_dir, ignore_errors=True)
         return
 
-    bot.reply_to(msg, "🔐 Cracking with dictionary attack...\n⏱️ May take 5+ minutes.", parse_mode='Markdown')
+    bot.reply_to(msg, "🔐 Cracking with multi-method attack...\n⏱️ May take 5+ minutes.", parse_mode='Markdown')
 
     # Crack
     password = crack_password_zip(file_path, WORDLIST_PATH)
@@ -206,11 +240,12 @@ def handle_file(msg):
     if not password:
         bot.reply_to(
             msg,
-            "❌ Password **NOT FOUND** in wordlist.\n\n"
-            "💡 Suggestions:\n"
-            "- Use a **stronger wordlist**.\n"
-            "- Try brute-force (very slow).\n"
-            "- If it's your file, try to remember the password.",
+            "❌ Password **NOT FOUND** using any method.\n\n"
+            "💡 **Suggestions:**\n"
+            "1. Use a **stronger wordlist** (e.g., `rockyou.txt` full version)\n"
+            "2. Try **brute-force** with hashcat (requires GPU)\n"
+            "3. If this is your file, try to **remember** the password.\n"
+            "4. The password might be **too complex** (long, special chars).",
             parse_mode='Markdown'
         )
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -237,7 +272,8 @@ def handle_file(msg):
             caption=f"✅ **Unlocked!**\n\n"
                     f"🔑 Password: `{password}`\n"
                     f"📁 Original: `{file_name}`\n"
-                    f"📦 Files extracted successfully.",
+                    f"📦 Files extracted successfully.\n\n"
+                    f"⚡ Method: hashcat / john / 7z",
             parse_mode='Markdown'
         )
 
@@ -255,7 +291,7 @@ def handle_callback(call):
         bot.edit_message_text(
             "📖 **How to use:**\n\n"
             "1️⃣ Send a password-protected ZIP file.\n"
-            "2️⃣ Bot will crack with dictionary attack.\n"
+            "2️⃣ Bot will try hashcat → john → 7z.\n"
             "3️⃣ If password found, you'll get your files.\n\n"
             "⚡ Supports **WinZip AES-256**.\n"
             "📦 Max file size: 45 MB\n"
@@ -269,7 +305,7 @@ def handle_callback(call):
 # 🚀 Start
 # ============================================
 if __name__ == "__main__":
-    print("🔥 GHOST Unlock Bot Starting...")
+    print("🔥 GHOST Unlock Bot v5.0 Starting...")
     download_wordlist()
     print("✅ Bot is ready!")
     print("📩 Waiting for files...")
