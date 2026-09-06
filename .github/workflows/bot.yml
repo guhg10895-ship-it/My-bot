@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: '0 */4 * * *'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # 👈 Node 24 ကို force သုံးမယ်
+
 concurrency:
   group: unlock-bot
   cancel-in-progress: true
