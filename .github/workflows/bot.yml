@@ -21,10 +21,13 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 🛠️ Install Tools & Dependencies
+      - name: 🛠️ Install System Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y fcrackzip unrar p7zip-full rar2john john
+          sudo apt-get install -y fcrackzip unrar p7zip-full john hashcat zip2john
+
+      - name: 📦 Install Python Dependencies
+        run: |
           pip install -r requirements.txt
 
       - name: 📂 Setup Wordlist
